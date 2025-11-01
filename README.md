@@ -4,7 +4,39 @@ Simple overview of use/purpose.
 
 ## Description
 
-An in-depth paragraph about your project and overview of use.
+An in-depth paragraph about your project and overview of use.  
+
+my-multiagent-app/
+│
+├── agents/
+│   ├── __init__.py
+│   ├── planner_agent.py
+│   ├── executor_agent.py
+│   ├── verifier_agent.py
+│   └── base_agent.py           # optional: helper for shared agent logic
+│
+├── tools/
+│   ├── __init__.py
+│   ├── search_tool.py
+│   ├── data_parser.py
+│   ├── web_scraper.py
+│   └── utils.py
+│
+├── graph/
+│   ├── __init__.py
+│   ├── orchestration.py        # where you build the StateGraph
+│   └── state_schema.py         # defines the shared state object
+│
+├── app/
+│   ├── __init__.py
+│   ├── cli.py                  # or API routes, FastAPI endpoints, etc.
+│   └── main.py                 # entry point (start the app / graph)
+│
+├── config.py                   # environment, keys, logging setup
+├── requirements.txt
+├── README.md
+└── .env
+
 
 ## Getting Started
 

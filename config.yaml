@@ -1,0 +1,11 @@
+repo_path: "/home/ean/projects/my-repo"
+feature_description: |
+  Implement "dark mode" toggle for the UI:
+  - Add a toggle in the header
+  - Persist preference to localStorage
+  - Provide CSS variables for theme colors
+  - Ensure accessible contrast
+check_interval_seconds: 30
+confidence_threshold: 0.6   # threshold (0..1) for "is this commit-worthy"
+auto_stage: true           # whether commit agent should `git add -A` before commit
+branch_name: null          # if set, CommitAgent will create/switch to this branch

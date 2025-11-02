@@ -1,0 +1,67 @@
+{
+  "developers": {
+    "eansengchang": {
+      "branches": [
+        {
+          "name": "commit-decider",
+          "rationale": "Implements a commit decider",
+          "tasks_included": ["TASK-101", "TASK-102"],
+          "parts_covered": {
+            "TASK-101": ["new python file", "commit decider"],
+            "TASK-102": ["JWT generation", "Error handling"]
+          },
+          "risk_notes": ["Potential rate-limit issues", "JWT expiry configuration"],
+          "commits": [
+            {
+              "title": "Add commit decider",
+              "body": "Implements a python file of an agent system that automatically commits",
+              "files": ["agents/auto_commiter.py"],
+              "per_file_changes": [
+                "python file of the agent system"
+              ]
+            },
+            {
+              "title": "Add error handling for failed logins",
+              "body": "Handles invalid credentials gracefully and returns proper HTTP status codes.",
+              "files": ["app/routes/login.py"],
+              "per_file_changes": ["Add try-except block for credential validation"]
+            }
+          ]
+        }
+      ]
+    },
+    "bob": {
+      "branches": [
+        {
+          "name": "feature/user-profile",
+          "rationale": "Adds user profile management including edit and view endpoints.",
+          "tasks_included": ["TASK-201"],
+          "parts_covered": {
+            "TASK-201": ["Profile model", "Edit endpoint", "Frontend integration"]
+          },
+          "risk_notes": ["Data consistency between profile updates and cached info"],
+          "commits": [
+            {
+              "title": "Create user profile model",
+              "body": "Defines Profile ORM model and database migration.",
+              "files": ["models/profile.py", "migrations/001_create_profile.py"],
+              "per_file_changes": [
+                "Add Profile model definition",
+                "Create initial migration for profile table"
+              ]
+            },
+            {
+              "title": "Add profile edit and view endpoints",
+              "body": "Implements GET and PUT routes for user profile management.",
+              "files": ["app/routes/profile.py"],
+              "per_file_changes": [
+                "Add profile view and edit handlers",
+                "Connect routes to Profile model"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

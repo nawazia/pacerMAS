@@ -22,38 +22,7 @@ def fs_ls(dir: str = ".", glob: str = "**/*", max_paths: int = 2000) -> List[str
     return paths[:max_paths]
 
 
-@tool
-def fs_read(path: str, max_bytes: int = 120_000) -> str:
-    """Read a text file from the repo. Returns at most max_bytes."""
-    print("fs_read", path, max_bytes)
-    p = Path(path)
-    if not p.exists() or not p.is_file():
-        return ""
-    return p.read_text(errors="replace")[:max_bytes]
-
-
-@tool
-def fs_search(dir: str, query: str, max_hits: int = 200) -> Dict[str, List[int]]:
-    """Search for a plain string in files under dir. Returns file -> line numbers."""
-    print("fs_search", dir, query, max_hits)
-    base = Path(dir)
-    hits = {}
-    for p in base.rglob("*"):
-        if not p.is_file():
-            continue
-        try:
-            txt = p.read_text(errors="ignore")
-        except Exception:
-            continue
-        lines = [i for i, line in enumerate(txt.splitlines(), 1) if query in line]
-        if lines:
-            hits[str(p.relative_to(base))] = lines[:20]
-        if len(hits) >= max_hits:
-            break
-    return hits
-
-
-TOOLS = [fs_ls, fs_read, fs_search]
+TOOLS = [fs_ls]
 
 
 # ---------- Schemas ----------
@@ -78,6 +47,12 @@ class BranchPlanSet(BaseModel):
 
 
 class AssignedWork(BaseModel):
+    """
+    The final work assignment plan.
+    Maps a developer's handle (e.g., '@maxbachmann') to a BranchPlanSet
+    containing all branches (and their commits) assigned to them.
+    """
+
     person_to_branchplanset: Dict[str, BranchPlanSet]
 
 
@@ -91,7 +66,7 @@ class State(TypedDict):
 
 # ---------- LLM ----------
 llm = ChatOpenAI(
-    model=os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini"),
+    model="openai/gpt-4o-mini",
     base_url="https://openrouter.ai/api/v1",
     api_key=os.getenv("OPENROUTER_API_KEY"),
     temperature=0,
@@ -102,7 +77,7 @@ SYSTEM = (
     "Constraints:\n"
     "- Branches should be cohesive vertical or horizontal slices that minimize cross branch blocking.\n"
     "- A branch may cover multiple tasks if they are tightly related. A single task may be split when schema or API needs a prep branch.\n"
-    "- You can call tools to inspect the repo: fs_ls, fs_read, fs_search but feel free to make a call and then you will be given the output but don't call each of fs_ls, fs_read, fs_search more than 10 times so 30 calls all together.\n"
+    "- You can call tools to inspect the repo: fs_ls but feel free to make a call and then you will be given the output but don't call fs_ls more than 10 times.\n"
     "Output ONLY a JSON object that validates against this JSON Schema:\n"
     f"{json.dumps(BranchPlanSet.model_json_schema(), indent=2)}\n"
     "Do not add extra keys. No markdown."
@@ -111,6 +86,7 @@ SYSTEM = (
 
 # ---------- Nodes ----------
 def agent_node(state: State) -> State:
+    print("AGENT CALL")
     if not state.get("messages"):
         # *** CHANGE THIS SECTION ***
         from langchain_core.messages import SystemMessage  # Ensure this is imported
@@ -145,6 +121,7 @@ tool_node = ToolNode(TOOLS)
 
 
 def finalize_node(state: State) -> State:
+    print("FINLIZE NODE")
     last = state["messages"][-1]
     if isinstance(last, AIMessage):
         raw = last.content.strip()
@@ -167,46 +144,48 @@ def finalize_node(state: State) -> State:
 # When tools run, ToolNode automatically appends ToolMessages; loop back to agent
 # We also make sure the model has a default dir to avoid empty-arg calls.
 def tools_wrapper(state: State) -> State:
+    print("TOOLS WRAPPER    ")
     # Auto-fill missing args by intercepting the last AIMessage and fixing tool_calls
     ai = state["messages"][-1]
     fixed = []
 
-    # Get the repo root as a Path object
-    repo_path = Path(state["repo_path"])
+    # Get the repo root as a Path object and RESOLVE it to an absolute path
+    repo_path = Path(state["repo_path"]).resolve()
+    repo_path_str = str(repo_path)  # Get the string of the absolute path
 
     for call in ai.tool_calls:
         name = call["name"]
         args = call.get("args") or {}
 
-        # *** START OF FIX ***
+        if name in ("fs_ls"):
+            # Get the dir path from the LLM
+            llm_path_str = args.get("dir", ".")
 
-        if name in ("fs_ls", "fs_search"):
-            # Get the relative dir from LLM, default to "." (repo root)
-            relative_dir = args.get("dir", ".")
-            # ALWAYS join it with the repo_path to create the full path
-            args["dir"] = str(repo_path / relative_dir)
+            # --- START OF FIX ---
+            # Resolve the LLM's path to an absolute path
+            # This handles '.', '..', and absolute paths correctly
+            llm_path_resolved = Path(llm_path_str).resolve()
+            llm_path_resolved_str = str(llm_path_resolved)
 
-            # Set other defaults if missing
+            # Check if the LLM's resolved path is *already inside* the repo's resolved path
+            if llm_path_resolved_str.startswith(repo_path_str):
+                # If YES: The LLM is re-using a full path. Use it as-is.
+                args["dir"] = llm_path_resolved_str
+            else:
+                # If NO: Assume it's a new path relative to the repo root.
+                # Join it with the absolute repo_path.
+                args["dir"] = str(repo_path / llm_path_str)
+            # --- END OF FIX ---
+
             if name == "fs_ls":
                 args.setdefault("glob", "**/*")
                 args.setdefault("max_paths", 2000)
-            if name == "fs_search" and "query" not in args:
-                # Keep the self-correction nudge
-                args = {"dir": str(repo_path), "query": "__MISSING_QUERY__"}
-
-        elif name == "fs_read":
-            # Get the relative file path from LLM, default to README.md
-            relative_path = args.get("path", "README.md")
-            # ALWAYS join it with the repo_path
-            args["path"] = str(repo_path / relative_path)
-
-        # *** END OF FIX ***
 
         fixed.append({"name": name, "args": args, "id": call["id"]})
 
     ai.tool_calls = fixed  # Mutate the AIMessage with corrected, absolute paths
 
-    # Now, execute the tools and append results (the fix from our previous conversation)
+    # Execute tools and append results
     tool_messages = tool_node.invoke(state["messages"])
     state["messages"].extend(tool_messages)
 
@@ -366,5 +345,118 @@ if __name__ == "__main__":
         "messages": [],
         "plan": None,
     }
+
+    developer_profiles = """
+    ---
+
+## 👤 Developer: @Joerki
+
+Based on the provided data, Joerki appears to have expertise in licensing and legal aspects within software development. They made a single commit to the repository, where they significantly modified the 'LICENSE' file by adding 13 lines and deleting 59 lines. This suggests a focus on maintaining and updating licensing terms, which is crucial for ensuring compliance and intellectual property protection in software projects. Joerki's indicated contribution aligns more with a role related to legal compliance or copyright management rather than specific programming languages or frameworks, indicating a valuable focus on the regulatory and governance aspects of software development.
+
+---
+
+## 👤 Developer: @antoinetavant
+
+Based on the provided data, 'antoinetavant' has made a single commit touching the 'docs' directory, specifically the 'index.rst' file by adding 1 line of code without any deletions. This indicates their focus on documentation-related tasks. Their expertise likely lies in maintaining project documentation, ensuring clarity and accuracy in describing project features and functionalities. Being involved in documenting project information is crucial for enhancing project understanding and developer collaboration. 'antoinetavant' may assume a Documentation role within the development process, contributing to the readability and accessibility of project resources for both internal and external audiences. The preferred language or framework cannot be determined from the provided data, as the contribution is in the form of documentation.
+
+---
+
+## 👤 Developer: @LecrisUT
+
+Based on the contributions by 'LecrisUT' to the GitHub repository, they have made a total of 2 commits and touched files related to 'pyproject.toml'. The first commit involved making 2 additions and 2 deletions to the 'pyproject.toml' file, while the second commit added 2 lines without any deletions to the same file. From this data, it can be inferred that 'LecrisUT' is proficient in Python and likely specializes in Python project configurations and dependencies management. Their focus seems to be on backend development or project setup/configuration tasks rather than frontend development or design. Given the nature of the changes in the 'pyproject.toml' file, 'LecrisUT' could be categorized as a Backend Developer or a DevOps specialist with expertise in Python project setups and configurations.
+
+---
+
+## 👤 Developer: @dependabot[bot]
+
+Based on the contributions of 'dependabot[bot]' in the repository, they have made a single commit that involved touching the '.github/workflows/pythonbuild.yml' file. This file is related to GitHub workflows and specifically for Python builds. The additions and deletions are equal at 2 each, indicating a balanced modification. This suggests that their core expertise lies in managing and automating workflows, particularly in the context of building Python applications. Therefore, 'dependabot[bot]' likely specializes in DevOps tasks related to CI/CD pipelines and automation, with a focus on Python projects.
+
+---
+
+## 👤 Developer: @guyrosin
+
+Based on the provided contribution data for 'guyrosin', it appears that they have expertise in Python programming language. The developer has made modifications to the 'levenshtein_cpp.pyx' file within the 'src/Levenshtein' directory. The equal number of additions and deletions implies that these modifications were likely for refactoring or optimizing existing code rather than adding new features. The use of '.pyx' extension suggests involvement in Cython, a tool for blending Python with C/C++ to improve performance. As the changes are in a specific directory related to algorithms (Levenshtein), 'guyrosin' may specialize in algorithm design and optimization. The provided data does not indicate a specific role, but their focus on low-level optimizations and algorithmic efficiency hints at a Back-end Developer or Software Engineer role with a specialization in performance tuning and algorithm implementation.
+
+---
+
+## 👤 Developer: @maxbachmann
+
+Based on the contributions of 'maxbachmann' to the GitHub repository, it is evident that their core expertise lies in Python development. They have made a significant number of commits and touched a wide variety of files related to a Python library. Their focus seems to be on backend development, specifically working on a library named 'Levenshtein'. Additionally, 'maxbachmann' has expertise in working with CMakeLists and C++ files given the additions and deletions made to these types of files. Their role can be identified as a Backend Developer with specialization in Python and C++ development. The preferred language/framework is Python, and they have a strong emphasis on maintaining and updating documentation as seen in the numerous changes made to 'HISTORY.md' and 'docs' files."""
+
     out = app.invoke(state)
-    print(json.dumps(out["output"].model_dump(), indent=2))
+    plan_json = json.dumps(out["output"].model_dump(), indent=2)
+    print("Plan JSON generated")
+
+    # Create the user prompt containing the two inputs
+    human_prompt = f"""
+    ## 1. Developer Profiles
+
+    {developer_profiles}
+
+    ---
+
+    ## 2. Branch & Commit Plan
+
+    {plan_json}
+    """
+
+    SYSTEM_PROMPT = f"""
+        You are an expert technical project manager. Your task is to assign planned work to developers.
+
+        You will receive two inputs:
+        1.  **Developer Profiles:** A list of developers and their inferred expertise.
+        2.  **Branch & Commit Plan:** A `BranchPlanSet` JSON object detailing branches and their constituent commits.
+
+        **Your Goal:**
+        Assign each **entire branch** to the single developer best suited to implement it.
+
+        **Assignment Constraints:**
+        1.  **Match Expertise:** Base your assignment on the developer's expertise (from their profile) and the files/changes listed in the commits (e.g., `.pyx` files, `pyproject.toml`, `docs/`).
+        2.  **Minimize Blocking:** Ideally, a single developer must own all commits on a branch. This helps to prevent merge conflicts, however, if there isn't enough work for this to happen, assign continguous sections of commits in a branch to each developer to minimize blocking.
+        3.  **Distribute Work:** Distribute work among all developers as evenly as possible, so that each developer has roughly the same number of commits.
+        4.  **Assign All Branches:** There could be multiple developers working on a branch, but only if needed. Ideally, if there are enough branches, each developer is assigned their own branches.
+        5.  **Filter Developers:** Only assign coding/documentation tasks to developers with relevant expertise. Do not assign work to bots (like '@dependabot[bot]') or purely legal contributors (like '@Joerki').
+
+        Rename the branches to standardized names like `feature/weighted-edits`, `feature/max-distance-cutoff`, etc.
+        **Output Format:**
+        You MUST output ONLY a valid JSON object that conforms to the `AssignedWork` schema. Do not add any other text, markdown, or explanation.
+
+        **Output Schemas:**
+
+        ```json
+        {json.dumps(AssignedWork.model_json_schema(), indent=2)}"""
+
+    messages = [
+        SystemMessage(content=SYSTEM_PROMPT),
+        HumanMessage(content=human_prompt),
+    ]
+
+    llm2 = ChatOpenAI(
+        model="anthropic/claude-3.7-sonnet",
+        base_url="https://openrouter.ai/api/v1",
+        api_key=os.getenv("OPENROUTER_API_KEY"),
+        temperature=0,
+    )
+
+    # Invoke the model
+    response = llm2.invoke(messages)
+
+    try:
+        # Parse the JSON response
+        output_data = json.loads(response.content.strip())
+
+        # Validate against the Pydantic model
+        assigned_work = AssignedWork.model_validate(output_data)
+        print("✅ Work assignment validated successfully.")
+        print(
+            json.dumps(assigned_work.model_dump(), indent=2)
+        )  # Pretty-print the validated output
+    except json.JSONDecodeError:
+        print(
+            f"❌ Error: LLM did not return valid JSON.\nRaw output: {response.content}"
+        )
+        raise
+    except Exception as e:
+        print(f"❌ Error: Failed to validate LLM output.\nError: {e}")
+        print(f"Raw output: {response.content}")
+        raise

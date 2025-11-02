@@ -7,6 +7,7 @@ from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 import operator
 import os
+import subprocess
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -36,13 +37,43 @@ def send_slack_message(recipient: str, message: str) -> str:
         # Return the specific error message to the LLM
         return f"Error sending message: {e.response['error']}"
     
+
+def run_main():
+    """Run the root-level main.py file, even if folders named 'main' exist elsewhere."""
+    # Find the absolute path to the project root (one level up)
+    root_path = os.path.abspath(os.path.join(os.getcwd(), ".."))
+    main_path = os.path.join(root_path, "main.py")
+
+    # Ensure it's actually a file
+    if not os.path.isfile(main_path):
+        raise FileNotFoundError(f"main.py not found at expected path: {main_path}")
+
+    try:
+        result = subprocess.run(
+            ["python", main_path],
+            check=True,
+            capture_output=True,
+            text=True
+        )
+        print("Output:\n", result.stdout)
+    except subprocess.CalledProcessError as e:
+        print("Error while running main.py:\n", e.stderr)
+
+
+    
 send_message_tool = StructuredTool.from_function(
     func=send_slack_message,
     name="send_slack_message",
     description="Send a Slack message to a specific user or channel. The recipient must be a valid user ID, username (e.g., @john_doe), or channel name (e.g., #general)."
 )
 
-tools = [send_message_tool]
+start_process_tool = StructuredTool.from_function(
+    func=run_main,
+    name="Start the process",
+    description="Runs the process that will split a plan with user stories into tasks"
+)
+
+tools = [send_message_tool, start_process_tool]
 
 # Bind the tool for tool calling capability
 llm_with_tools = model.bind_tools(tools)
@@ -61,11 +92,13 @@ class SlackWriterState(TypedDict):
 def llm_call(state: SlackWriterState) -> SlackWriterState:
     """The LLM node: calls the model to decide on an action."""
     system_prompt = (
-        "You are an automated Slack assistant tasked with sending messages. "
+        "You are an automated Slack assistant tasked with sending messages and starting the planngin process. "
         "If the user explicitly asks you to 'send' a message, you MUST call "
-        "the 'send_slack_message' tool. If the user's request is a greeting "
+        "the 'send_message_tool' tool. If the user's request is a greeting "
         "or a question not related to sending a message, respond conversationally "
         "and DO NOT use the tool. Always be concise."
+        "If the user gives you a plan or user stories, use the 'start_process_tool' tool"
+        "Update the user after calling the start process tool, with the 'send_message_tool' tool"
     )
     
     # Prepend the system prompt to the messages list
@@ -89,6 +122,18 @@ def tool_node(state: SlackWriterState) -> SlackWriterState:
             if tool_name == send_message_tool.name:
                 # Execute the specific tool
                 observation = send_slack_message(**tool_args)
+                
+                # Append the result as a ToolMessage
+                tool_messages.append(
+                    ToolMessage(
+                        content=observation,
+                        tool_call_id=tool_call_id
+                    )
+                )
+
+            if tool_name == start_process_tool.name:
+                # Execute the specific tool
+                observation = run_main(**tool_args)
                 
                 # Append the result as a ToolMessage
                 tool_messages.append(

@@ -12,6 +12,8 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 from pydantic import BaseModel, Field, ValidationError
 
+from agents.slack_writer import run_agent
+
 load_dotenv()
 
 
@@ -472,6 +474,14 @@ Based on the contributions of 'maxbachmann' to the GitHub repository, it is evid
         # Validate against the Pydantic model
         assigned_work = AssignedWork.model_validate(output_data)
         print("✅ Work assignment validated successfully.")
+
+        run_agent(
+            "Send on slack to #all-agentsverse-hackathon: BRANCHES AND COMMITS ASSIGNED"
+        )
+        # run_agent(
+        #     "Format and send the following to #all-agentsverse-hackathon:"
+        #     + json.dumps(assigned_work.model_dump_json())
+        # )
         return assigned_work.model_dump()
     except json.JSONDecodeError:
         print(

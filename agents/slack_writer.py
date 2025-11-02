@@ -123,9 +123,6 @@ graph_builder = StateGraph(SlackWriterState)
 graph_builder.add_node("llm_call", llm_call)
 graph_builder.add_node("tool_node", tool_node)
 
-# Set the entry point for the graph
-# graph_builder.set_entry_point(START)
-
 # Set the entry transition: from START to the LLM node
 graph_builder.add_edge(START, "llm_call")
 
@@ -142,20 +139,36 @@ graph_builder.add_edge("tool_node", "llm_call")
 # Compile the graph into a runnable agent
 agent = graph_builder.compile()
 
+def run_agent(user_input):
+    initial_message = [HumanMessage(content=user_input)]
+    print(f"--- Running Agent for: '{user_input}' ---")
+
+    result = agent.invoke({"messages": initial_message})
+    
+    final_message = result["messages"][-1].content
+    print("\nFinal Agent Response:")
+    print(f"=============================\n{final_message}")
+
+    return final_message
+
+# Example Run
+run_agent("end 'Hello from the Pacer Agent!' to #all-agentsverse-hackathon")
+
+
 # --- 7. Run the Agent (Example) ---
-user_input = "Send 'Hello from the LangGraph Agent!' to #all-agentsverse-hackathon"
+# user_input = "Send 'Hello from the LangGraph Agent!' to #all-agentsverse-hackathon"
 # user_input = "What is the capital of France?" # Example without tool call
 
-initial_message = [HumanMessage(content=user_input)]
-print(f"--- Running Agent for: '{user_input}' ---")
+# initial_message = [HumanMessage(content=user_input)]
+# print(f"--- Running Agent for: '{user_input}' ---")
 
 # The agent's state now starts with the user's initial message
-result = agent.invoke({"messages": initial_message})
+# result = agent.invoke({"messages": initial_message})
 
 # Print the final output message from the agent
-final_message = result["messages"][-1].content
-print("\nFinal Agent Response:")
-print(f"=============================\n{final_message}")
+# final_message = result["messages"][-1].content
+# print("\nFinal Agent Response:")
+# print(f"=============================\n{final_message}")
 
 # You can visualize the graph if you have the necessary libraries installed
 # from IPython.display import Image, display

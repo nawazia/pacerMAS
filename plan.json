@@ -1,65 +1,67 @@
 {
-    "sprintId": "sprint-2025-w42",
-    "sprintGoal": "Implement user authentication flow",
-    "repositoryUrl": "https://www.google.com/search?q=https://github.com/my-org/my-project.git",
-    "developerAssignments": {
-        "dev-agent-1": {
-            "tasks": [
-                {
-                    "taskId": "auth-backend",
-                    "branchName": "feature/auth-backend",
-                    "baseBranch": "main",
-                    "featureDescription": "Create the backend API endpoints for user login and registration.",
-                    "commits": [
-                        {
-                            "commitId": "auth-backend-1",
-                            "message": "feat: add user model and database migration",
-                            "implementationDetails": "Create a 'User' model with 'username' (string, unique) and 'passwordHash' (string). Generate a database migration file for this model.",
-                            "filesToModify": [
-                                "models/user.js",
-                                "migrations/20251102-create-user.js"
-                            ]
-                        },
-                        {
-                            "commitId": "auth-backend-2",
-                            "message": "feat: implement /api/register endpoint",
-                            "implementationDetails": "Create a POST endpoint at '/api/register'. It should accept 'username' and 'password', hash the password, and save the new user to the database. Return a JWT.",
-                            "filesToModify": [
-                                "routes/api.js",
-                                "controllers/authController.js"
-                            ]
-                        }
-                    ]
-                }
-            ]
-        },
-        "dev-agent-2": {
-            "tasks": [
-                {
-                    "taskId": "auth-frontend",
-                    "branchName": "feature/auth-frontend",
-                    "baseBranch": "main",
-                    "featureDescription": "Build the frontend login and registration pages.",
-                    "commits": [
-                        {
-                            "commitId": "auth-frontend-1",
-                            "message": "feat: create basic login form component",
-                            "implementationDetails": "Create a new React component 'LoginForm.js'. It should be a simple form with 'username' and 'password' inputs and a 'Login' button. No state logic yet.",
-                            "filesToModify": [
-                                "src/components/LoginForm.js"
-                            ]
-                        },
-                        {
-                            "commitId": "auth-frontend-2",
-                            "message": "feat: add state and API call to login form",
-                            "implementationDetails": "In 'LoginForm.js', add component state to manage inputs. On form submit, make a POST request to the (future) '/api/login' endpoint with the credentials.",
-                            "filesToModify": [
-                                "src/components/LoginForm.js"
-                            ]
-                        }
-                    ]
-                }
-            ]
+  "developers": {
+    "eansengchang": {
+      "branches": [
+        {
+          "name": "commit-decider",
+          "rationale": "Implements a commit decider",
+          "tasks_included": ["TASK-101", "TASK-102"],
+          "parts_covered": {
+            "TASK-101": ["new python file", "commit decider"],
+            "TASK-102": ["JWT generation", "Error handling"]
+          },
+          "risk_notes": ["Potential rate-limit issues", "JWT expiry configuration"],
+          "commits": [
+            {
+              "title": "Add commit decider",
+              "body": "Implements a python file of an agent system that automatically commits",
+              "files": ["agents/auto_commiter.py"],
+              "per_file_changes": [
+                "python file of the agent system"
+              ]
+            },
+            {
+              "title": "Add error handling for failed logins",
+              "body": "Handles invalid credentials gracefully and returns proper HTTP status codes.",
+              "files": ["app/routes/login.py"],
+              "per_file_changes": ["Add try-except block for credential validation"]
+            }
+          ]
         }
+      ]
+    },
+    "bob": {
+      "branches": [
+        {
+          "name": "feature/user-profile",
+          "rationale": "Adds user profile management including edit and view endpoints.",
+          "tasks_included": ["TASK-201"],
+          "parts_covered": {
+            "TASK-201": ["Profile model", "Edit endpoint", "Frontend integration"]
+          },
+          "risk_notes": ["Data consistency between profile updates and cached info"],
+          "commits": [
+            {
+              "title": "Create user profile model",
+              "body": "Defines Profile ORM model and database migration.",
+              "files": ["models/profile.py", "migrations/001_create_profile.py"],
+              "per_file_changes": [
+                "Add Profile model definition",
+                "Create initial migration for profile table"
+              ]
+            },
+            {
+              "title": "Add profile edit and view endpoints",
+              "body": "Implements GET and PUT routes for user profile management.",
+              "files": ["app/routes/profile.py"],
+              "per_file_changes": [
+                "Add profile view and edit handlers",
+                "Connect routes to Profile model"
+              ]
+            }
+          ]
+        }
+      ]
     }
+  }
 }

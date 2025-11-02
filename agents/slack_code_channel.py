@@ -300,131 +300,6 @@ PLAN_CONTENT = """
           ],
           "parts_covered": {
             "src/Levenshtein/levenshtein_cpp.pyx": [
-              "Implement distance_with_weights method"
-            ],
-            "src/Levenshtein/__init__.py": [
-              "Expose distance_with_weights in the API"
-            ],
-            "docs/levenshtein.rst": [
-              "Update documentation for distance_with_weights"
-            ],
-            "tests/test_levenshtein_distance.py": [
-              "Add tests for distance_with_weights"
-            ]
-          },
-          "risk_notes": [],
-          "commits": [
-            {
-              "title": "Implement distance_with_weights method",
-              "body": "Added a new method to calculate edit distance with weighted character substitutions.",
-              "files": [
-                "src/Levenshtein/levenshtein_cpp.pyx"
-              ],
-              "per_file_changes": [
-                "Added distance_with_weights method"
-              ]
-            },
-            {
-              "title": "Expose distance_with_weights in the API",
-              "body": "Updated the __init__.py to include the new method in the public API.",
-              "files": [
-                "src/Levenshtein/__init__.py"
-              ],
-              "per_file_changes": [
-                "Exposed distance_with_weights"
-              ]
-            },
-            {
-              "title": "Update documentation for distance_with_weights",
-              "body": "Documented the new distance_with_weights method in the Levenshtein documentation.",
-              "files": [
-                "docs/levenshtein.rst"
-              ],
-              "per_file_changes": [
-                "Updated documentation for distance_with_weights"
-              ]
-            },
-            {
-              "title": "Add tests for distance_with_weights",
-              "body": "Added comprehensive test cases for the distance_with_weights method.",
-              "files": [
-                "tests/test_levenshtein_distance.py"
-              ],
-              "per_file_changes": [
-                "Added tests for distance_with_weights"
-              ]
-            }
-          ]
-        },
-        {
-          "name": "feature/pure-python-fallback",
-          "rationale": "To provide a pure-Python fallback implementation for platforms where C extensions cannot be compiled, ensuring broader compatibility.",
-          "tasks_included": [
-            "task_2"
-          ],
-          "parts_covered": {
-            "src/Levenshtein/levenshtein_py.dart": [
-              "Create pure-Python fallback module"
-            ],
-            "src/Levenshtein/__init__.py": [
-              "Add logic to select fallback module"
-            ],
-            "docs/levenshtein.rst": [
-              "Document fallback module and performance trade-off"
-            ]
-          },
-          "risk_notes": [],
-          "commits": [
-            {
-              "title": "Create fallback module",
-              "body": "Added a pure-Python fallback module for platforms without C extension support.",
-              "files": [
-                "src/Levenshtein/levenshtein_py.dart"
-              ],
-              "per_file_changes": [
-                "Created levenshtein_py.dart fallback module"
-              ]
-            },
-            {
-              "title": "Add selection logic for fallback module",
-              "body": "Updated __init__.py to include logic for selecting the fallback module.",
-              "files": [
-                "src/Levenshtein/__init__.py"
-              ],
-              "per_file_changes": [
-                "Added logic to select fallback module"
-              ]
-            },
-            {
-              "title": "Document fallback module",
-              "body": "Documented the fallback module and its performance trade-off in the Levenshtein documentation.",
-              "files": [
-                "docs/levenshtein.rst"
-              ],
-              "per_file_changes": [
-                "Added documentation for fallback module"
-              ]
-            }
-          ]
-        }
-      ]
-    }
-  }
-}
-"""
-PLAN_CONTENT = """
-{
-  "person_to_branchplanset": {
-    "@maxbachmann": {
-      "branches": [
-        {
-          "name": "feature/weighted-edits",
-          "rationale": "To enhance similarity scoring by allowing certain character substitutions to count differently in edit distance calculations.",
-          "tasks_included": [
-            "task_1"
-          ],
-          "parts_covered": {
-            "src/Levenshtein/levenshtein_cpp.pyx": [
               "Add new API method distance_with_weights"
             ],
             "src/Levenshtein/__init__.py": [
@@ -749,7 +624,7 @@ PLAN_CONTENT = """
               ]
             }
           ]
-        },
+        }
       ]
     },
     "@eansengchang": {
@@ -782,7 +657,8 @@ PLAN_CONTENT = """
     ]
     }
   }
-}"""
+}
+"""
 
 # 2. Get GitHub configuration from environment variables
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")

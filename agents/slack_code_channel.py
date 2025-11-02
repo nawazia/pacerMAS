@@ -750,6 +750,10 @@ PLAN_CONTENT = """
             }
           ]
         },
+      ]
+    },
+    "@eansengchang": {
+      "branches": [
         {
           "name": "docs/readme-review-note",
           "rationale": "To add a simple line in readme file that says 'reviewed by Bob'.",
@@ -775,7 +779,7 @@ PLAN_CONTENT = """
             }
           ]
         }
-      ]
+    ]
     }
   }
 }"""

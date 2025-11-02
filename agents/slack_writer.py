@@ -39,14 +39,11 @@ def send_slack_message(recipient: str, message: str) -> str:
     
 
 def run_main():
-    """Run the root-level main.py file, even if folders named 'main' exist elsewhere."""
-    # Find the absolute path to the project root (one level up)
     root_path = os.path.abspath(os.path.join(os.getcwd(), ".."))
     main_path = os.path.join(root_path, "main.py")
 
-    # Ensure it's actually a file
     if not os.path.isfile(main_path):
-        raise FileNotFoundError(f"main.py not found at expected path: {main_path}")
+        return f"main.py not found at expected path: {main_path}"
 
     try:
         result = subprocess.run(
@@ -55,10 +52,9 @@ def run_main():
             capture_output=True,
             text=True
         )
-        print("Output:\n", result.stdout)
+        return f"Output:\n{result.stdout}"
     except subprocess.CalledProcessError as e:
-        print("Error while running main.py:\n", e.stderr)
-
+        return f"Error while running main.py:\n{e.stderr}"
 
     
 send_message_tool = StructuredTool.from_function(
@@ -69,7 +65,7 @@ send_message_tool = StructuredTool.from_function(
 
 start_process_tool = StructuredTool.from_function(
     func=run_main,
-    name="Start the process",
+    name="start_process",
     description="Runs the process that will split a plan with user stories into tasks"
 )
 
@@ -94,11 +90,11 @@ def llm_call(state: SlackWriterState) -> SlackWriterState:
     system_prompt = (
         "You are an automated Slack assistant tasked with sending messages and starting the planngin process. "
         "If the user explicitly asks you to 'send' a message, you MUST call "
-        "the 'send_message_tool' tool. If the user's request is a greeting "
+        "the 'send_slack_message' tool. If the user's request is a greeting "
         "or a question not related to sending a message, respond conversationally "
         "and DO NOT use the tool. Always be concise."
-        "If the user gives you a plan or user stories, use the 'start_process_tool' tool"
-        "Update the user after calling the start process tool, with the 'send_message_tool' tool"
+        "If the user gives you a plan or user stories, use the 'start_process' tool"
+        "Update the user after calling the start process tool, with the 'send_slack_message' tool"
     )
     
     # Prepend the system prompt to the messages list
@@ -197,7 +193,7 @@ def run_agent(user_input):
     return final_message
 
 # Example Run
-run_agent("end 'Hello from the Pacer Agent!' to #all-agentsverse-hackathon")
+run_agent("send 'Hello from the Pacer Agent!' to #all-agentsverse-hackathon")
 
 
 # --- 7. Run the Agent (Example) ---

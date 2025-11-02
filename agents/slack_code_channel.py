@@ -159,22 +159,23 @@ def check_github_commits(
             response.raise_for_status()
             latest_sha = response.json()["commit"]["sha"]
         except requests.exceptions.RequestException as e:
+            if response.status_code == 404:
+                print(f"Branch {branch_name} not found. Skipping.")
+                continue
             print(f"Error fetching branch {branch_name}: {e}")
             continue
 
         last_sha = updated_last_processed_sha.get(branch_name)
+        is_first_run = not last_sha
 
-        if not last_sha:
-            # First run: Initialize SHA and skip commit processing
-            updated_last_processed_sha[branch_name] = latest_sha
-            print(f"First run for branch {branch_name}. Initialized SHA: {latest_sha}. Skipping commit check.")
+        # 1a. Skip only if the branch is already tracked AND nothing has changed
+        if not is_first_run and latest_sha == last_sha:
             continue
-            
-        if latest_sha == last_sha:
-            continue
-            
-        # 2. Fetch commits between last_sha and latest_sha
-        # Fetching a list of commits for the branch
+
+        if is_first_run:
+            print(f"New branch detected: {branch_name}. Checking all existing commits.")
+
+        # 2. Fetch commits from the branch tip (up to 100)
         commits_url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/commits?sha={branch_name}&per_page=100"
         try:
             commits_response = requests.get(commits_url, headers=headers)
@@ -184,11 +185,11 @@ def check_github_commits(
             print(f"Error fetching commits for {branch_name}: {e}")
             continue
 
-        # 3. Process new commits
+        # 3. Process new commits (stops when it hits last_sha, or processes all if last_sha is None/new branch)
         commits_to_process = []
         for commit in commits_data:
-            if commit["sha"] == last_sha:
-                break
+            if last_sha and commit["sha"] == last_sha:
+                break # Stop when we hit the previously processed commit
             commits_to_process.append(commit)
             
         commits_to_process.reverse() # Process oldest to newest
@@ -196,7 +197,6 @@ def check_github_commits(
         target_titles_set = set(target_titles_list)
         
         for commit in commits_to_process:
-            # Use the first line of the commit message as the title
             commit_title = commit["commit"]["message"].split('\n')[0].strip()
             
             if commit_title in target_titles_set:
@@ -207,12 +207,11 @@ def check_github_commits(
                     "url": commit["html_url"],
                     "author": commit["commit"]["author"]["name"]
                 })
-                # Remove the title to prevent re-triggering for the same commit
                 target_titles_set.discard(commit_title)
                 
-        # 4. Update the processed SHA to the latest SHA
-        if commits_to_process:
-            updated_last_processed_sha[branch_name] = latest_sha
+        # 4. Always update the processed SHA to the latest SHA after checking
+        # This initializes tracking for a new branch or moves the pointer for an old one.
+        updated_last_processed_sha[branch_name] = latest_sha
 
     return updated_last_processed_sha, completed_commits
 
@@ -251,7 +250,7 @@ def run_github_slack_loop(
             
             # 2. Process completed tasks
             if completed_commits:
-                print(f"\n✅ Found {len(completed_commits)} new completed tasks. Triggering Slack notifications.")
+                print(f"\nFound {len(completed_commits)} new completed tasks. Triggering Slack notifications.")
                 
                 for commit_data in completed_commits:
                     branch = commit_data['branch']
@@ -262,10 +261,10 @@ def run_github_slack_loop(
                     
                     message = (
                         f"A planned task is complete! 🎉\n\n"
-                        f"➡️ *Task:* `{title}`\n"
-                        f"👤 *Author:* {author}\n"
-                        f"🌿 *Branch:* `{branch}`\n"
-                        f"🔗 *Commit:* <{url}|{sha}>\n\n"
+                        f"*Task:* `{title}`\n"
+                        f"*Author:* {author}\n"
+                        f"*Branch:* `{branch}`\n"
+                        f"*Commit:* <{url}|{sha}>\n\n"
                         f"Great work!"
                     )
                     

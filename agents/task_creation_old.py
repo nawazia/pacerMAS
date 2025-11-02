@@ -229,11 +229,16 @@ def gh_search_keywords(
 @tool
 def gh_cochange(limit_commits: int = 200) -> Dict[str, int]:
     """Return simple co-change counts: 'fileA|fileB' -> count from recent commits."""
-    owner, repo = _parse_repo_slug(GITHUB_REPO_PATH)
-    shas = _github_commit_shas(owner, repo, max_commits=limit_commits)
+    # FIX: Use the GITHUB_REPO_PATH directly instead of parsing it as a slug.
+    repo_path = GITHUB_REPO_PATH
+    owner = "local"  # This argument is unused by the local helpers
+
+    # Pass the correct repo_path to the helper functions
+    shas = _github_commit_shas(owner, repo_path, max_commits=limit_commits)
     counts: Dict[str, int] = {}
     for sha in shas:
-        files = sorted(set(_github_commit_files(owner, repo, sha)))
+        # Pass the correct repo_path here as well
+        files = sorted(set(_github_commit_files(owner, repo_path, sha)))
         n = len(files)
         if n == 0 or n > 200:
             continue
@@ -285,8 +290,11 @@ def invoke_single_agent(jira_stories: str, repo_url: str) -> TaskGraph:
             messages.append(ai)
             for tc in ai.tool_calls:
                 if tc["name"] == "gh_search_keywords":
-                    # ensure tc["args"] includes {"repo_path": repo_path, "keywords":[...]}
-                    result = gh_search_keywords.invoke(tc["args"])
+                    # --- FIX: Inject the repo_path into the tool call ---
+                    tool_args = tc["args"].copy()
+                    tool_args["repo_path"] = repo_url  # repo_url is GITHUB_REPO_PATH
+                    result = gh_search_keywords.invoke(tool_args)
+                    # --- END FIX ---
                 elif tc["name"] == "gh_cochange":
                     result = gh_cochange.invoke(tc["args"])
                 else:

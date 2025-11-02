@@ -1,0 +1,5 @@
+langgraph>=0.1.0   # hypothetical min-version; used if available
+openai>=0.27.0
+gitpython>=3.1.30
+watchdog>=2.1.9
+PyYAML>=6.0

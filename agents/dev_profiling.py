@@ -388,7 +388,7 @@ def run_analysis(repo_url: str):
     return markdown_report
 
 
-if __name__ == "__main__":
+def main():
     # Run the analysis
     final_report = run_analysis(REPO)
 

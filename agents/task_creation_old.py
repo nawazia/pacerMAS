@@ -336,8 +336,9 @@ graph.add_edge(START, "planner_agent")
 graph.add_edge("planner_agent", END)
 app = graph.compile()
 
+
 # ---------- Demo ----------
-if __name__ == "__main__":
+def main():
     stories = """
         1) As a developer I want “weighted edits” support so that certain character substitutions (e.g., accented vs non-accented, case differences, punctuation) count for less/more than 1 in the edit distance, enabling more flexible similarity scoring.
 
@@ -377,4 +378,4 @@ if __name__ == "__main__":
         "plan": None,
     }
     out = app.invoke(state)
-    print(json.dumps(out["plan"].model_dump(), indent=2))
+    return out["plan"].model_dump()

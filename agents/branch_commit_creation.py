@@ -3,13 +3,36 @@ import os
 from pathlib import Path
 from typing import Dict, List, Optional, TypedDict
 
+from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
+from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 from pydantic import BaseModel, Field, ValidationError
-from task_creation import TaskGraph
+
+load_dotenv()
+
+
+class TaskNode(BaseModel):
+    id: str  # stable short id, e.g. T1, T2
+    title: str  # concise name
+    rationale: str  # why this is a clean boundary
+    deliverables: List[str] = Field(default_factory=list)
+    probable_files: List[str] = Field(default_factory=list)  # relative repo paths
+
+
+class GraphEdge(BaseModel):
+    src: int  # index in tasks list
+    dst: int  # index in tasks list
+    reason: str  # brief why dependency exists
+    confidence: float = Field(ge=0, le=1)
+
+
+class TaskGraph(BaseModel):
+    tasks: List[TaskNode]
+    edges: List[GraphEdge]  # directed: src -> dst must come before
 
 
 @tool
@@ -209,8 +232,9 @@ g.add_conditional_edges(
 
 app = g.compile()
 
+
 # --------- CLI entry ---------
-if __name__ == "__main__":
+def main():
 
     state: State = {
         "repo_path": os.getenv("GITHUB_REPO_PATH"),
@@ -448,9 +472,7 @@ Based on the contributions of 'maxbachmann' to the GitHub repository, it is evid
         # Validate against the Pydantic model
         assigned_work = AssignedWork.model_validate(output_data)
         print("✅ Work assignment validated successfully.")
-        print(
-            json.dumps(assigned_work.model_dump(), indent=2)
-        )  # Pretty-print the validated output
+        return assigned_work.model_dump()
     except json.JSONDecodeError:
         print(
             f"❌ Error: LLM did not return valid JSON.\nRaw output: {response.content}"

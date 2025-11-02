@@ -5,7 +5,7 @@
 # specific feature.
 #
 # Requirements:
-# pip install langchain langgraph langchain-google-genai gitpython python-dotenv pydantic
+# pip install langchain langgraph langchain-google-genai gitpython python-dotenv
 #
 # Setup:
 # 1. Make sure you have a .env file in the same directory with your
@@ -153,7 +153,7 @@ class AgentState(TypedDict):
 
 # General-purpose LLM
 llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash", # Using 1.5-flash as 2.5 is not widely available
+    model="gemini-2.5-flash", # Using 1.5-flash for reliability
     temperature=0,
 )
 
@@ -219,7 +219,7 @@ def stager_agent_node(state: AgentState) -> dict:
 
     # Run the agent loop (max 5 steps)
     for i in range(5):
-        print(f"Stager Agent: Invoking LLM (Step {i+1}/5)...") # <-- ADDED LOGGING
+        print(f"Stager Agent: Invoking LLM (Step {i+1}/5)...")
         try:
             response: AIMessage = stager_agent_llm.invoke(messages)
             messages.append(response)
@@ -227,7 +227,6 @@ def stager_agent_node(state: AgentState) -> dict:
             if response.tool_calls:
                 print(f"Tool calls: {response.tool_calls}")
                 for tc in response.tool_calls:
-                    # <-- ADDED LOGGING
                     print(f"Stager Agent: Executing tool '{tc['name']}' with args: {tc['args']}")
                     # Execute the tool
                     tool_func = globals()[tc["name"]]
@@ -242,13 +241,18 @@ def stager_agent_node(state: AgentState) -> dict:
             else:
                 # Agent responded without a tool call
                 print(f"Stager agent observation: {response.content}")
+                
+                # --- FIX 1 START ---
+                # Cast content to string before calling .lower()
+                content_str = str(response.content)
+
                 # If agent says no changes or not ready, stop.
-                if "no changes" in response.content.lower() or \
-                   "not ready" in response.content.lower() or \
-                   "partial" in response.content.lower():
-                    # <-- ADDED LOGGING
+                if "no changes" in content_str.lower() or \
+                   "not ready" in content_str.lower() or \
+                   "partial" in content_str.lower():
                     print("Stager Agent: Observation indicates no action required. Stopping loop.")
                     return {"messages": messages}
+                # --- FIX 1 END ---
         
         except Exception as e:
             print(f"Error in stager agent loop: {e}")
@@ -264,10 +268,15 @@ def committer_agent_node(state: AgentState) -> dict:
     This node represents the 'Committer Agent'. It generates a commit
     message based on the staged diff.
     """
-    print("--- ✍️ Committer Agent Running ---") # <-- MODIFIED EMOJI
+    print("--- ✍️ Committer Agent Running ---")
     staged_diff = state["staged_diff"]
     feature = state["feature_description"]
-    # <-- ADDED LOGGING
+    
+    # --- Check if diff is empty (which it shouldn't be if graph logic is correct) ---
+    if not staged_diff:
+        print("Committer Agent: ERROR - Received an empty diff. Aborting.")
+        return {"commit_message": "error: no diff provided"}
+
     print(f"Committer Agent: Received staged diff of {len(staged_diff)} characters.")
 
     prompt = f"""
@@ -324,12 +333,16 @@ def commit_and_push_node(state: AgentState) -> dict:
         return {"push_status": f"Error: {e}"}
 
 
-# --- 6. Define Graph Conditional Logic ---
+# --- FIX 2 START ---
+# We replace the old conditional edge with a new node and a new conditional edge.
 
-def should_commit(state: AgentState) -> str:
+# --- 6. New Node to Check Staging ---
+
+def check_staging_node(state: AgentState) -> dict:
     """
-    This is a conditional edge. It checks if the stager agent
-    actually staged any files.
+    Checks if files are staged and updates the state
+    with the staged diff. This is a dedicated node to ensure
+    state is updated correctly.
     """
     print("--- 🤔 Checking if files are staged ---")
     try:
@@ -338,24 +351,39 @@ def should_commit(state: AgentState) -> str:
 
         if not staged_diff:
             print("No files were staged. Ending cycle.")
-            return END
+            # Return the empty diff to update the state
+            return {"staged_diff": ""}
         else:
-            # <-- MODIFIED LOGGING
             print(f"Staged changes detected ({len(staged_diff)} chars). Proceeding to commit.")
-            # Update state for the next node
-            state["staged_diff"] = staged_diff
-            return "generate_commit_message"
+            # Return the found diff to update the state
+            return {"staged_diff": staged_diff}
     except Exception as e:
         print(f"Error checking staged diff: {e}", file=sys.stderr)
+        return {"staged_diff": ""} # Return empty diff on error
+
+
+# --- 7. Define Graph Conditional Logic ---
+
+def did_stage(state: AgentState) -> str:
+    """
+    This is a conditional edge. It checks if the
+    check_staging_node found a diff in the state.
+    """
+    if state.get("staged_diff"):
+        return "generate_commit_message"
+    else:
         return END
 
+# --- FIX 2 END ---
 
-# --- 7. Build the Graph ---
+
+# --- 8. Build the Graph ---
 
 graph = StateGraph(AgentState)
 
 # Add nodes
 graph.add_node("stager_agent", stager_agent_node)
+graph.add_node("check_staging", check_staging_node) # <-- FIX 2: Added new node
 graph.add_node("committer_agent", committer_agent_node)
 graph.add_node("commit_and_push", commit_and_push_node)
 
@@ -363,9 +391,12 @@ graph.add_node("commit_and_push", commit_and_push_node)
 graph.set_entry_point("stager_agent")
 
 # Add edges
+graph.add_edge("stager_agent", "check_staging") # <-- FIX 2: Stager goes to check_staging
+
+# <-- FIX 2: New conditional edge from check_staging
 graph.add_conditional_edges(
-    "stager_agent",
-    should_commit,
+    "check_staging",
+    did_stage,
     {
         "generate_commit_message": "committer_agent",
         END: END,
@@ -378,7 +409,7 @@ graph.add_edge("commit_and_push", END)
 app = graph.compile()
 
 
-# --- 8. Main Execution Loop ---
+# --- 9. Main Execution Loop ---
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
@@ -429,7 +460,6 @@ if __name__ == "__main__":
     if args.dry_run:
         print("--- RUNNING IN DRY-RUN MODE ---")
 
-    # --- ADDED: Print Mermaid Graph ---
     print("\n" + "="*50)
     print("Agent Graph Structure (Mermaid):")
     try:
@@ -437,7 +467,6 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"Could not draw graph: {e}")
     print("="*50 + "\n")
-    # --- END ADDED SECTION ---
 
     # Define the initial state
     initial_state: AgentState = {

@@ -15,6 +15,8 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field, ValidationError
 
+from agents.slack_writer import run_agent
+
 load_dotenv()
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
@@ -378,4 +380,12 @@ def main():
         "plan": None,
     }
     out = app.invoke(state)
+
+    run_agent(
+        "Send on slack to #all-agentsverse-hackathon: TASKS AND DEPENDENCIES CREATED"
+    )
+    # run_agent(
+    #     "Format and send the following to #all-agentsverse-hackathon:"
+    #     + json.dumps(out["plan"].model_dump_json())
+    # )
     return out["plan"].model_dump()

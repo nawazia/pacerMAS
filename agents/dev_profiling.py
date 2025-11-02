@@ -9,6 +9,8 @@ from dotenv import load_dotenv
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
+from agents.slack_writer import run_agent
+
 load_dotenv()
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -397,5 +399,13 @@ def main():
         # Use a temporary name based on the repo for the markdown file
         repo_name_safe = REPO.split("/")[-1].replace(".", "_")
         filepath = f"dev_profiles_{repo_name_safe}.md"
+
+        run_agent(
+            "Send on slack to #all-agentsverse-hackathon: DEVELOPER PROFILES GENERATED"
+        )
+        # run_agent(
+        #     "Format and send the following to #all-agentsverse-hackathon:"
+        #     + final_report
+        # )
 
         print(final_report)

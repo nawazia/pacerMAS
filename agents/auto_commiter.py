@@ -1,355 +1,481 @@
-import os
-import time
-import git  # Import the gitpython library
-import argparse # <-- 1. IMPORTED ARGPARSE
-from dotenv import load_dotenv
-from typing import TypedDict, Literal, Optional
+#!/usr/bin/env python
 
-from langgraph.graph import StateGraph
+# This script implements a multi-agent system using LangGraph to monitor
+# a local Git repository and automatically commit changes related to a
+# specific feature.
+#
+# Requirements:
+# pip install langchain langgraph langchain-google-genai gitpython python-dotenv pydantic
+#
+# Setup:
+# 1. Make sure you have a .env file in the same directory with your
+#    Google Gemini API key:
+#    GOOGLE_API_KEY="your_api_key_here"
+#
+# 2. Create a feature file (e.g., feature.txt) with your feature
+#    description and acceptance criteria.
+#
+# 3. Ensure the target repository is a valid Git repo and you have
+#    push permissions to the 'origin' remote.
+#
+# Usage:
+# python auto_committer.py /path/to/your/repo feature.txt
+#
+# For testing (prevents actual commit and push):
+# python auto_committer.py /path/to/your/repo feature.txt --dry-run
+#
+# How it works:
+# 1. A 'stager' agent monitors the repo for file changes.
+# 2. It uses tools to get the diff and analyze it with an LLM (Gemini)
+#    against the feature description.
+# 3. If the changes are relevant and complete, it stages them.
+# 4. A 'committer' agent takes the staged diff, generates a commit
+#    message using the LLM, and (if not in --dry-run)
+#    commits and pushes the changes.
+# 5. The script polls the repository at a defined interval.
+
+import argparse
+import json
+import os
+import sys
+import time
+from pathlib import Path
+from typing import Dict, List, TypedDict, Any
+
+import git
+from dotenv import load_dotenv
+from langchain_core.messages import (
+    AIMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
+from langchain_core.tools import tool
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
+from langgraph.graph import END, START, StateGraph
+
+# --- 1. Load Environment Variables ---
 
 load_dotenv()
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+if not GOOGLE_API_KEY:
+    print("Error: GOOGLE_API_KEY not found in .env file.", file=sys.stderr)
+    sys.exit(1)
 
-# ------------------------------------------------------------------
-# 1. ⚠️ CONFIGURATION: SET YOUR KEYS AND PATHS HERE ⚠️
-# ------------------------------------------------------------------
-
-# 1. Set your Google API key (get one from https://aistudio.google.com/)
-# Already loaded in .env file
+# --- 2. Define Tools for the Stager Agent ---
+# These tools allow the agent to inspect the local repository.
 
 
-# 2. Set the *full* path to the local Git repository you want to monitor
-#    Example for Windows: "C:\\Users\\YourName\\Projects\\my-repo"
-#    Example for macOS/Linux: "/Users/yourname/projects/my-repo"
-REPO_PATH = "/Users/eansengchang/Documents/Stuff/projects/hackathons/pacerMAS"
+@tool
+def get_working_directory_diff(repo_path: str) -> str:
+    """
+    Gets all uncommitted, unstaged changes (the 'git diff')
+    in the specified repository.
+    """
+    try:
+        repo = git.Repo(repo_path)
+        return repo.git.diff()
+    except Exception as e:
+        return f"Error getting diff: {e}"
 
-# 3. Describe the feature you are currently working on
-#    The AI will use this to decide if changes are relevant.
-FEATURE_DESCRIPTION = (
-    "Implement a new auto committer "
-    "This includes automatically detecting if a new commit is necessary and then automatically committing with a relevant message"
-)
 
-# 4. Set how often to check for changes (in seconds)
-CHECK_INTERVAL_SECONDS = 30
+@tool
+def list_repository_files(repo_path: str) -> str:
+    """
+    Lists all files in the repository, respecting .gitignore.
+    Returns a JSON string list.
+    """
+    try:
+        repo = git.Repo(repo_path)
+        files = repo.git.ls_files().splitlines()
+        return json.dumps(files)
+    except Exception as e:
+        return f"Error listing files: {e}"
 
-# ------------------------------------------------------------------
-# 2. DEFINE THE STATE FOR OUR AGENT SYSTEM
-# ------------------------------------------------------------------
+
+@tool
+def get_file_contents(repo_path: str, file_path: str) -> str:
+    """
+    Gets the current contents of a specific file from the working directory.
+    """
+    try:
+        full_path = (Path(repo_path) / file_path).resolve()
+        # Security check to prevent reading files outside the repo
+        if not full_path.is_relative_to(Path(repo_path).resolve()):
+            return "Error: File path is outside the repository."
+        return full_path.read_text()
+    except Exception as e:
+        return f"Error reading file {file_path}: {e}"
+
+
+@tool
+def stage_files(repo_path: str, files: List[str]) -> str:
+    """
+    Stages the specified list of files for the next commit.
+    The 'files' argument must be a list of file paths.
+    """
+    try:
+        repo = git.Repo(repo_path)
+        # Verify files exist and are in the repo
+        valid_files = []
+        repo_root = Path(repo_path).resolve()
+        for f in files:
+            full_path = (repo_root / f).resolve()
+            if full_path.is_relative_to(repo_root) and full_path.exists():
+                valid_files.append(f)
+            else:
+                print(f"Warning: Skipping non-existent or outside file: {f}")
+        
+        if not valid_files:
+            return "Error: No valid files provided to stage."
+
+        repo.index.add(valid_files)
+        return f"Successfully staged: {valid_files}"
+    except Exception as e:
+        return f"Error staging files: {e}"
+
+
+# --- 3. Define Agent State ---
+# This TypedDict holds the state that is passed between nodes in our graph.
+
 
 class AgentState(TypedDict):
-    """Defines the state that flows through the graph."""
     repo_path: str
     feature_description: str
-    wait_interval_seconds: int
-    changes: str  # The full 'git diff' output
-    commit_decision: Literal["yes", "no", ""] # AI's decision
-    commit_message: str # AI-generated commit message
-    dry_run: bool # <-- 2. ADDED DRY_RUN TO STATE
-    error: Optional[str] # To hold any errors
+    dry_run: bool
+    messages: list  # Conversation history for the stager agent
+    staged_diff: str  # The diff of what's been staged
+    commit_message: str
+    push_status: str
 
-# ------------------------------------------------------------------
-# 3. DEFINE HELPER FUNCTIONS (GIT OPERATIONS)
-# ------------------------------------------------------------------
 
-def get_git_diff(repo_path: str) -> tuple[str, Optional[str]]:
+# --- 4. Configure LLMs ---
+
+# General-purpose LLM
+llm = ChatGoogleGenerativeAI(
+    model="gemini-2.5-flash", # Using 1.5-flash as 2.5 is not widely available
+    temperature=0,
+)
+
+# LLM for the stager agent, bound with our repository tools
+stager_tools = [
+    get_working_directory_diff,
+    list_repository_files,
+    get_file_contents,
+    stage_files,
+]
+stager_agent_llm = llm.bind_tools(stager_tools)
+
+
+# --- 5. Define Graph Nodes ---
+
+def stager_agent_node(state: AgentState) -> dict:
     """
-    Checks for staged, unstaged, and untracked changes in the repo.
-    Returns a combined diff string and an error string, if any.
+    This node represents the 'Stager Agent'. It uses the LLM with tools
+    to analyze the repo and decide whether to stage files.
     """
+    print("--- 🕵️ Stager Agent Running ---")
+    repo_path = state["repo_path"]
+    feature = state["feature_description"]
+
+    system_prompt = f"""
+    You are a 'Stager' agent. Your job is to monitor a code repository at
+    '{repo_path}' for changes related to a specific feature.
+    Your goal is to decide when the changes are complete and relevant,
+    and then stage them for commit.
+
+    Feature Description & Acceptance Criteria:
+    ---
+    {feature}
+    ---
+
+    You have the following tools:
+    - `get_working_directory_diff(repo_path)`: Shows all uncommitted, unstaged changes.
+    - `list_repository_files(repo_path)`: List all files in the repo.
+    - `get_file_contents(repo_path, file_path)`: Get contents of a specific file.
+    - `stage_files(repo_path, files)`: Stages the specified files.
+
+    Your process:
+    1.  Call `get_working_directory_diff()` with `repo_path='{repo_path}'`
+        to see if there are any changes.
+    2.  If the diff is empty, stop and report "No changes detected."
+    3.  If there is a diff, analyze it against the feature description.
+    4.  Decide if the changes are (a) relevant and (b) complete enough for a commit.
+        You may use `get_file_contents` to inspect files further if needed.
+    5.  If NOT ready, stop and report your reasoning
+        (e.g., "Changes are partial...").
+    6.  If READY, analyze the diff and identify ALL modified files that
+        should be part of this commit.
+    7.  Call `stage_files(repo_path='{repo_path}', files=[...])` with the
+        list of files to stage. This is your final action.
+        DO NOT call this tool with an empty list.
+    """
+
+    # Initialize messages for the agent
+    messages = [
+        SystemMessage(content=system_prompt),
+        HumanMessage(content="Start monitoring and analysis."),
+    ]
+
+    # Run the agent loop (max 5 steps)
+    for i in range(5):
+        print(f"Stager Agent: Invoking LLM (Step {i+1}/5)...") # <-- ADDED LOGGING
+        try:
+            response: AIMessage = stager_agent_llm.invoke(messages)
+            messages.append(response)
+
+            if response.tool_calls:
+                print(f"Tool calls: {response.tool_calls}")
+                for tc in response.tool_calls:
+                    # <-- ADDED LOGGING
+                    print(f"Stager Agent: Executing tool '{tc['name']}' with args: {tc['args']}")
+                    # Execute the tool
+                    tool_func = globals()[tc["name"]]
+                    result = tool_func.invoke(tc["args"])
+                    messages.append(
+                        ToolMessage(content=str(result), tool_call_id=tc["id"])
+                    )
+                    # If we staged files, our job is done.
+                    if tc["name"] == "stage_files":
+                        print(f"Stager agent action: {result}")
+                        return {"messages": messages}
+            else:
+                # Agent responded without a tool call
+                print(f"Stager agent observation: {response.content}")
+                # If agent says no changes or not ready, stop.
+                if "no changes" in response.content.lower() or \
+                   "not ready" in response.content.lower() or \
+                   "partial" in response.content.lower():
+                    # <-- ADDED LOGGING
+                    print("Stager Agent: Observation indicates no action required. Stopping loop.")
+                    return {"messages": messages}
+        
+        except Exception as e:
+            print(f"Error in stager agent loop: {e}")
+            messages.append(HumanMessage(content=f"An error occurred: {e}. Please reassess."))
+
+
+    print("Stager agent finished cycle.")
+    return {"messages": messages}
+
+
+def committer_agent_node(state: AgentState) -> dict:
+    """
+    This node represents the 'Committer Agent'. It generates a commit
+    message based on the staged diff.
+    """
+    print("--- ✍️ Committer Agent Running ---") # <-- MODIFIED EMOJI
+    staged_diff = state["staged_diff"]
+    feature = state["feature_description"]
+    # <-- ADDED LOGGING
+    print(f"Committer Agent: Received staged diff of {len(staged_diff)} characters.")
+
+    prompt = f"""
+    Given the following staged changes (git diff):
+    ---
+    {staged_diff}
+    ---
+
+    And the feature context:
+    ---
+    {feature}
+    ---
+
+    Generate a concise, conventional commit message (e.g., 'feat: add new feature').
+    Respond with ONLY the commit message string, no other text,
+    markdown, or JSON.
+    """
+    
     try:
-        repo = git.Repo(repo_path)
-        
-        # 1. Get staged changes (diff against HEAD)
-        diff_staged = repo.git.diff("--staged")
-        
-        # 2. Get unstaged changes (diff against index)
-        diff_unstaged = repo.git.diff()
-        
-        # 3. Get list of untracked files
-        untracked_files = repo.untracked_files
-        untracked_str = "\n".join([f"Untracked file: {f}" for f in untracked_files])
-        
-        # Combine all changes into one string
-        full_diff = (
-            f"--- Staged Changes ---\n{diff_staged}\n\n"
-            f"--- Unstaged Changes ---\n{diff_unstaged}\n\n"
-            f"--- Untracked Files ---\n{untracked_str}"
-        )
-        
-        # Check if there are any changes at all
-        if not diff_staged and not diff_unstaged and not untracked_files:
-            return "", None  # No changes
-            
-        return full_diff, None
-        
-    except git.exc.InvalidGitRepositoryError:
-        return "", f"Error: '{repo_path}' is not a valid Git repository."
+        response = llm.invoke(prompt)
+        message = response.content.strip().strip("`")
+        print(f"Generated commit message: {message}")
+        return {"commit_message": message}
     except Exception as e:
-        return "", f"Error getting Git diff: {e}"
+        print(f"Error generating commit message: {e}")
+        return {"commit_message": "fix: auto-commit generation failed"}
 
-def perform_git_commit(repo_path: str, message: str) -> Optional[str]:
+
+def commit_and_push_node(state: AgentState) -> dict:
     """
-    Stages all changes and performs a commit with the given message.
-    Returns an error string, if any.
+    This node performs the final git commit and push operations,
+    unless --dry-run is specified.
     """
+    print("--- 🚀 Commit and Push Node Running ---")
+    if state["dry_run"]:
+        print("\n--- DRY RUN ---")
+        print("Changes are staged.")
+        print(f"Would commit with message: '{state['commit_message']}'")
+        print("Skipping actual commit and push.")
+        return {"push_status": "dry_run_skipped"}
+
     try:
-        repo = git.Repo(repo_path)
-        
-        # Stage all changes (add untracked, modified, and deleted)
-        repo.git.add(A=True)
-        
-        # Perform the commit
-        repo.index.commit(message)
-        
-        print(f"\n✅ Successfully committed with message:\n{message}")
-        return None
+        repo = git.Repo(state["repo_path"])
+        repo.index.commit(state["commit_message"])
+        print("Changes committed successfully.")
+
+        # Push to origin (assumes 'origin' remote and current branch)
+        origin = repo.remote(name="origin")
+        origin.push()
+        print("Changes pushed to origin successfully.")
+        return {"push_status": "pushed_successfully"}
     except Exception as e:
-        print(f"\n❌ Error during commit: {e}")
-        return f"Error during commit: {e}"
-
-# ------------------------------------------------------------------
-# 4. SET UP THE LLM (GEMINI)
-# ------------------------------------------------------------------
-
-# We'll use Gemini Pro, which is great for these tasks
-llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash-lite", temperature=0.3)
-
-# ------------------------------------------------------------------
-# 5. DEFINE THE GRAPH NODES (THE AGENTS' ACTIONS)
-# ------------------------------------------------------------------
-
-def check_changes_node(state: AgentState) -> dict:
-    """Node 1: Checks for file changes in the repository."""
-    print("... Monitoring for changes ...")
-    
-    diff, error = get_git_diff(state['repo_path'])
-    
-    if error:
-        print(error)
-        return {"error": error, "changes": ""}
-        
-    if not diff:
-        # No changes found.
-        return {"changes": "", "commit_decision": ""}
-    
-    # Changes were found!
-    print("🔥 Changes detected!")
-    return {"changes": diff, "error": None}
+        print(f"Error during commit or push: {e}", file=sys.stderr)
+        return {"push_status": f"Error: {e}"}
 
 
-def decide_to_commit_node(state: AgentState) -> dict:
-    """Node 2: (Agent 1) AI decides if the changes are ready for commit."""
-    print("... AI deciding if changes are commit-worthy ...")
-    
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", 
-         "You are a senior software engineer. Your job is to decide if the current "
-         "code changes are substantial enough and aligned with the planned feature "
-         "to warrant a commit. Do not commit if the work is clearly half-finished "
-         "(e.g., functions defined but not used, 'TODO' comments for core logic)."),
-        ("human",
-         "Here is the planned feature:\n<feature>\n{feature_description}\n</feature>\n\n"
-         "Here are the current code changes (diff):\n<changes>\n{changes}\n</changes>\n\n"
-         "Based on these changes and the feature, is it a good time to commit?\n"
-         "Answer with only 'yes' or 'no'.")
-    ])
-    
-    decide_chain = prompt | llm | StrOutputParser()
-    
-    result = decide_chain.invoke({
-        "feature_description": state['feature_description'],
-        "changes": state['changes']
-    })
-    
-    decision = "yes" if "yes" in result.lower() else "no"
-    print(f"... AI decision: {decision.upper()} ...")
-    return {"commit_decision": decision}
+# --- 6. Define Graph Conditional Logic ---
+
+def should_commit(state: AgentState) -> str:
+    """
+    This is a conditional edge. It checks if the stager agent
+    actually staged any files.
+    """
+    print("--- 🤔 Checking if files are staged ---")
+    try:
+        repo = git.Repo(state["repo_path"])
+        staged_diff = repo.git.diff(staged=True)
+
+        if not staged_diff:
+            print("No files were staged. Ending cycle.")
+            return END
+        else:
+            # <-- MODIFIED LOGGING
+            print(f"Staged changes detected ({len(staged_diff)} chars). Proceeding to commit.")
+            # Update state for the next node
+            state["staged_diff"] = staged_diff
+            return "generate_commit_message"
+    except Exception as e:
+        print(f"Error checking staged diff: {e}", file=sys.stderr)
+        return END
 
 
-def generate_commit_message_node(state: AgentState) -> dict:
-    """Node 3: (Agent 2) AI generates a commit message for the changes."""
-    print("... AI generating commit message ...")
-    
-    prompt = ChatPromptTemplate.from_messages([
-        ("system",
-         "You are an expert at writing high-quality, concise git commit messages. "
-         "Generate a commit message in the conventional commit format "
-         "(e.g., 'feat: add new login endpoint'). The message should be based "
-         "on the provided code diff and feature description."),
-        ("human",
-         "Feature Description:\n{feature_description}\n\n"
-         "Code Diff:\n{changes}\n\n"
-         "Generate the conventional commit message (header and optional body).")
-    ])
-    
-    message_chain = prompt | llm | StrOutputParser()
-    
-    message = message_chain.invoke({
-        "feature_description": state['feature_description'],
-        "changes": state['changes']
-    })
-    
-    return {"commit_message": message.strip().strip('`')}
+# --- 7. Build the Graph ---
 
+graph = StateGraph(AgentState)
 
-def commit_node(state: AgentState) -> dict:
-    """Node 4: Performs the actual git commit operation (or simulates it)."""
-    # <-- 3. MODIFIED COMMIT_NODE -->
-    
-    if state['dry_run']:
-        print("... [DRY RUN] Simulating commit ...")
-        print(f"--- [DRY RUN] Commit Message Would Be: ---")
-        print(state['commit_message'])
-        print("-------------------------------------------")
-        error = None # Simulate successful commit
-    else:
-        print("... Attempting to commit changes ...")
-        error = perform_git_commit(state['repo_path'], state['commit_message'])
-    
-    if error:
-        return {"error": error}
-        
-    # Clear state after successful commit (or simulated commit)
-    return {
-        "error": None, 
-        "changes": "", 
-        "commit_message": "", 
-        "commit_decision": ""
-    }
-
-
-def wait_node(state: AgentState) -> dict:
-    """Node 5: Waits for a set interval before checking again."""
-    wait_interval = state['wait_interval_seconds']
-    print(f"... Waiting for {wait_interval} seconds ...")
-    time.sleep(wait_interval)
-    return {} # No state change, just pauses execution
-
-# ------------------------------------------------------------------
-# 6. DEFINE THE GRAPH EDGES (THE LOGIC FLOW)
-# ------------------------------------------------------------------
-
-def after_check_changes(state: AgentState) -> Literal["decide_to_commit", "wait"]:
-    """Conditional Edge 1: After checking, either decide or wait."""
-    if state.get("error"):
-        print("Error detected, waiting before retry.")
-        return "wait" # Wait and retry if there was a git error
-    if state["changes"]:
-        return "decide_to_commit" # Changes found, let AI decide
-    else:
-        return "wait" # No changes, go to wait node
-
-def after_decide_commit(state: AgentState) -> Literal["generate_message", "wait"]:
-    """Conditional Edge 2: After deciding, either commit or wait."""
-    if state["commit_decision"] == "yes":
-        return "generate_message" # AI said yes, generate message
-    else:
-        return "wait" # AI said no, wait for more changes
-
-# ------------------------------------------------------------------
-# 7. BUILD AND COMPILE THE LANGGRAPH WORKFLOW
-# ------------------------------------------------------------------
-
-workflow = StateGraph(AgentState)
-
-# Add all the nodes
-workflow.add_node("check_changes", check_changes_node)
-workflow.add_node("decide_to_commit", decide_to_commit_node)
-workflow.add_node("generate_message", generate_commit_message_node)
-workflow.add_node("commit_changes", commit_node)
-workflow.add_node("wait", wait_node)
+# Add nodes
+graph.add_node("stager_agent", stager_agent_node)
+graph.add_node("committer_agent", committer_agent_node)
+graph.add_node("commit_and_push", commit_and_push_node)
 
 # Set the entry point
-workflow.set_entry_point("check_changes")
+graph.set_entry_point("stager_agent")
 
-# Add the conditional edges
-workflow.add_conditional_edges(
-    "check_changes",
-    after_check_changes,
+# Add edges
+graph.add_conditional_edges(
+    "stager_agent",
+    should_commit,
     {
-        "decide_to_commit": "decide_to_commit",
-        "wait": "wait"
-    }
+        "generate_commit_message": "committer_agent",
+        END: END,
+    },
 )
+graph.add_edge("committer_agent", "commit_and_push")
+graph.add_edge("commit_and_push", END)
 
-workflow.add_conditional_edges(
-    "decide_to_commit",
-    after_decide_commit,
-    {
-        "generate_message": "generate_message",
-        "wait": "wait"
-    }
-)
+# Compile the graph
+app = graph.compile()
 
-# Add the normal edges
-workflow.add_edge("wait", "check_changes")
-workflow.add_edge("generate_message", "commit_changes")
-workflow.add_edge("commit_changes", "check_changes")
 
-# Compile the graph into a runnable application
-app = workflow.compile()
-
-# ------------------------------------------------------------------
-# 8. RUN THE AGENT SYSTEM
-# ------------------------------------------------------------------
+# --- 8. Main Execution Loop ---
 
 if __name__ == "__main__":
-    
-    # <-- 4. MODIFIED MAIN BLOCK -->
-    
-    # --- Set up command-line argument parsing ---
-    parser = argparse.ArgumentParser(description="Git Autocommiter Agent")
+    parser = argparse.ArgumentParser(
+        description="Auto-Committer Agent System"
+    )
+    parser.add_argument(
+        "repo_path",
+        type=str,
+        help="Filesystem path to the local Git repository."
+    )
+    parser.add_argument(
+        "feature_file",
+        type=str,
+        help="Path to a text file containing the feature description and AC."
+    )
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Run the agent without performing the actual git commit (for debugging)."
+        help="Run all steps except the final git commit and push."
     )
+    parser.add_argument(
+        "--poll-interval",
+        type=int,
+        default=60,
+        help="Time in seconds to wait between checks (default: 60)."
+    )
+
     args = parser.parse_args()
-    
-    # --- Validation Checks ---
-    api_key = os.environ.get("GOOGLE_API_KEY", "your-api-key")
-    if not api_key or api_key == "your-api-key":
-        print("="*50)
-        print("❌ ERROR: Please set your 'GOOGLE_API_KEY' at the top of the script.")
-        print("="*50)
-    elif REPO_PATH == "path/to/your/repo":
-         print("="*50)
-         print("❌ ERROR: Please set the 'REPO_PATH' variable to your local repository.")
-         print("="*50)
-    else:
-        print(f"🚀 Starting Git Autocommiter Agent...")
-        
-        if args.dry_run:
-            print("   ⚠️  RUNNING IN DRY-RUN MODE. NO COMMITS WILL BE MADE. ⚠️")
+
+    # Validate inputs
+    if not Path(args.repo_path).is_dir():
+        print(f"Error: Repo path not found: {args.repo_path}", file=sys.stderr)
+        sys.exit(1)
+    if not Path(args.feature_file).is_file():
+        print(f"Error: Feature file not found: {args.feature_file}", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        # Check if it's a valid git repo
+        repo = git.Repo(args.repo_path)
+    except git.exc.InvalidGitRepositoryError:
+        print(f"Error: Not a valid git repository: {args.repo_path}", file=sys.stderr)
+        sys.exit(1)
+
+    # Read feature description
+    feature_description = Path(args.feature_file).read_text()
+
+    if args.dry_run:
+        print("--- RUNNING IN DRY-RUN MODE ---")
+
+    # --- ADDED: Print Mermaid Graph ---
+    print("\n" + "="*50)
+    print("Agent Graph Structure (Mermaid):")
+    try:
+        print(app.get_graph().draw_mermaid())
+    except Exception as e:
+        print(f"Could not draw graph: {e}")
+    print("="*50 + "\n")
+    # --- END ADDED SECTION ---
+
+    # Define the initial state
+    initial_state: AgentState = {
+        "repo_path": args.repo_path,
+        "feature_description": feature_description,
+        "dry_run": args.dry_run,
+        "messages": [],
+        "staged_diff": "",
+        "commit_message": "",
+        "push_status": "",
+    }
+
+    # Start the polling loop
+    try:
+        while True:
+            print("\n" + "="*50)
+            print(f"[{time.ctime()}] Running check on {args.repo_path}...")
             
-        print(f"   Monitoring Repo: {REPO_PATH}")
-        print(f"   Working on Feature: {FEATURE_DESCRIPTION}")
-        print(f"   Check Interval: {CHECK_INTERVAL_SECONDS} seconds")
-        print("="*50)
-        
-        # Set the initial state
-        initial_state = {
-            "repo_path": REPO_PATH,
-            "feature_description": FEATURE_DESCRIPTION,
-            "wait_interval_seconds": CHECK_INTERVAL_SECONDS,
-            "changes": "",
-            "commit_decision": "",
-            "commit_message": "",
-            "dry_run": args.dry_run, # Pass the CLI argument into the state
-            "error": None
-        }
-        
-        try:
-            # The .stream() method will run the graph in a loop
-            for event in app.stream(initial_state):
-                # Print the current node being executed
-                node = list(event.keys())[0]
-                print(f"--- Entering Node: {node} ---")
+            # Create a fresh copy of the state for this run,
+            # except for persistent fields if we had any.
+            run_state = initial_state.copy()
+            run_state["messages"] = [] # Reset messages for each run
+
+            try:
+                # Invoke the agent graph
+                final_state = app.invoke(run_state)
                 
-        except KeyboardInterrupt:
-            print("\n🛑 User interrupted. Shutting down agent.")
-        except Exception as e:
-            print(f"\n💥 An unexpected error occurred: {e}")
+                if final_state.get("push_status"):
+                    print(f"Cycle complete. Status: {final_state['push_status']}")
+                else:
+                    print("Cycle complete. No action taken.")
+
+            except Exception as e:
+                print(f"An error occurred during graph execution: {e}", file=sys.stderr)
+
+            print(f"Waiting for {args.poll_interval} seconds...")
+            time.sleep(args.poll_interval)
+
+    except KeyboardInterrupt:
+        print("\nPolling stopped by user. Exiting.")
+        sys.exit(0)

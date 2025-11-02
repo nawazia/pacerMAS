@@ -403,9 +403,9 @@ def main():
         run_agent(
             "Send on slack to #all-agentsverse-hackathon: DEVELOPER PROFILES GENERATED"
         )
-        # run_agent(
-        #     "Format and send the following to #all-agentsverse-hackathon:"
-        #     + final_report
-        # )
+        run_agent(
+            "Format and send the following to #all-agentsverse-hackathon:"
+            + final_report
+        )
 
         print(final_report)

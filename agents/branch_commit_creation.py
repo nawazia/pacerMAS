@@ -450,7 +450,7 @@ Based on the contributions of 'maxbachmann' to the GitHub repository, it is evid
         **Output Schemas:**
 
         ```json
-        {json.dumps(AssignedWork.model_json_schema(), indent=2)}"""
+        {json.dumps(AssignedWork.model_json_schema(), indent=4)}"""
 
     messages = [
         SystemMessage(content=SYSTEM_PROMPT),
@@ -478,10 +478,11 @@ Based on the contributions of 'maxbachmann' to the GitHub repository, it is evid
         run_agent(
             "Send on slack to #all-agentsverse-hackathon: BRANCHES AND COMMITS ASSIGNED"
         )
-        # run_agent(
-        #     "Format and send the following to #all-agentsverse-hackathon:"
-        #     + json.dumps(assigned_work.model_dump_json())
-        # )
+        run_agent(
+            "Send the following exactly as formatted with nice indentations to #all-agentsverse-hackathon: ```"
+            + json.dumps(assigned_work.model_dump_json(), indent=4)
+            + "```"
+        )
         return assigned_work.model_dump()
     except json.JSONDecodeError:
         print(

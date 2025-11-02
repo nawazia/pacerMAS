@@ -384,8 +384,9 @@ def main():
     run_agent(
         "Send on slack to #all-agentsverse-hackathon: TASKS AND DEPENDENCIES CREATED"
     )
-    # run_agent(
-    #     "Format and send the following to #all-agentsverse-hackathon:"
-    #     + json.dumps(out["plan"].model_dump_json())
-    # )
+    run_agent(
+        "Send the following exactly as formatted with nice indentations to #all-agentsverse-hackathon: ```"
+        + json.dumps(out["plan"].model_dump_json(), indent=4)
+        + "```"
+    )
     return out["plan"].model_dump()
